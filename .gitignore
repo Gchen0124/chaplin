@@ -31,3 +31,5 @@ build/
 *.egg-info/
 benchmarks/**
 *.mp4
+data/
+.chaplin/

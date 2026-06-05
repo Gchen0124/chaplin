@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chaplin · Review</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="topbar">
+    <strong>Chaplin · Review</strong>
+    <nav><a href="/index.html">Practice</a><a href="/review.html">Review</a></nav>
+  </div>
+  <main style="grid-template-columns: 1fr;">
+    <section class="card">
+      <div class="controls">
+        <button id="tabVocab">Vocabulary</button>
+        <button id="tabHistory" class="secondary">History</button>
+        <input id="search" placeholder="Search vocabulary…" style="max-width:240px;" />
+        <label style="margin:0;flex-direction:row;align-items:center;gap:6px;">
+          <input type="checkbox" id="starredOnly" style="width:auto;" /> Starred only</label>
+      </div>
+      <div id="list" style="margin-top:16px;"></div>
+    </section>
+  </main>
+  <script src="/review.js"></script>
+</body>
+</html>
