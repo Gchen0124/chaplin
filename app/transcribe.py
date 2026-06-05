@@ -11,7 +11,8 @@ class Transcript(BaseModel):
 
 
 async def transcribe(audio_path: str, key: str, base_url: str,
-                     poll_interval: float = 1.0, max_polls: int = 60) -> Transcript:
+                     poll_interval: float = 1.0, max_polls: int = 60,
+                     language: str | None = None) -> Transcript:
     headers = {"x-gladia-key": key}
     async with httpx.AsyncClient(timeout=120.0) as client:
         # 1. upload
@@ -24,11 +25,18 @@ async def transcribe(audio_path: str, key: str, base_url: str,
         up.raise_for_status()
         audio_url = up.json()["audio_url"]
 
-        # 2. request transcription
+        # 2. request transcription. If a language is forced, disable auto-detect
+        #    (Gladia's detector sometimes confuses zh with ko on short clips).
+        config = {"audio_url": audio_url, "diarization": False}
+        if language:
+            config["detect_language"] = False
+            config["language"] = language
+        else:
+            config["detect_language"] = True
         req = await client.post(
             f"{base_url}/v2/pre-recorded",
             headers=headers,
-            json={"audio_url": audio_url, "detect_language": True, "diarization": False},
+            json=config,
         )
         req.raise_for_status()
         result_url = req.json()["result_url"]

@@ -31,6 +31,9 @@ input, select { width: 100%; border: 1px solid rgba(255,255,255,0.14);
 .line.minor .text { font-size: 14px; color: #9aa6a1; }
 mark { background: #b9f3d0; color: #0b0d0c; border-radius: 3px; padding: 0 3px; }
 .copied { color: #b9f3d0; font-size: 12px; margin-left: 8px; }
+.time { font-size: 11px; color: #6f7d77; margin-left: 8px; font-variant-numeric: tabular-nums; }
+.time.slow { color: #f3c98b; }
+.line.pending .text { opacity: 0.5; }
 .key-row { display: flex; justify-content: space-between; align-items: center;
   font-size: 13px; padding: 6px 0; }
 @media (max-width: 860px) { main { grid-template-columns: 1fr; } }

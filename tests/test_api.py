@@ -100,6 +100,68 @@ def test_tts_endpoint_returns_audio(tmp_path, fake_services):
     assert resp.headers["content-type"] == "audio/mpeg"
 
 
+def _parse_ndjson(text):
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def test_sessions_stream_emits_events_in_order(tmp_path, fake_services, monkeypatch):
+    monkeypatch.setattr("app.api.audio.has_audio", lambda p: True)
+    monkeypatch.setattr("app.api.audio.extract_audio", lambda v, o: True)
+    monkeypatch.setattr("app.api.audio.probe_duration", lambda p: 3.0)
+    client, store = build_client(tmp_path, fake_services,
+                                 keys_payload={"gladia": "g", "openai": "o"})
+    files = {"file": ("clip.webm", io.BytesIO(b"fakevideo"), "video/webm")}
+    resp = client.post("/api/v1/sessions/stream", files=files,
+                       data={"target_lang": "en", "source_lang": "auto"})
+    assert resp.status_code == 200
+    events = _parse_ndjson(resp.text)
+    types = [e["type"] for e in events]
+    assert "lip" in types and "original" in types and "refined" in types
+    assert types[-1] == "done"
+    by_type = {e["type"]: e for e in events}
+    assert by_type["original"]["text"] == "你好世界"
+    assert by_type["refined"]["text"] == "Hello, world."
+    assert "stage_ms" in by_type["lip"]
+    assert len(store.list_sessions()) == 1
+
+
+def test_sessions_stream_forced_language_skips_autodetect(tmp_path, fake_services, monkeypatch):
+    monkeypatch.setattr("app.api.audio.has_audio", lambda p: True)
+    monkeypatch.setattr("app.api.audio.extract_audio", lambda v, o: True)
+    monkeypatch.setattr("app.api.audio.probe_duration", lambda p: 3.0)
+    captured = {}
+
+    async def capturing_transcribe(audio_path, key, base_url, **kw):
+        captured["language"] = kw.get("language")
+        from app.transcribe import Transcript
+        return Transcript(text="你好", language="zh", confidence=0.9)
+
+    fake_services["transcribe"] = capturing_transcribe
+    client, _ = build_client(tmp_path, fake_services,
+                             keys_payload={"gladia": "g", "openai": "o"})
+    files = {"file": ("clip.webm", io.BytesIO(b"fakevideo"), "video/webm")}
+    resp = client.post("/api/v1/sessions/stream", files=files,
+                       data={"target_lang": "en", "source_lang": "zh"})
+    events = _parse_ndjson(resp.text)
+    by_type = {e["type"]: e for e in events}
+    assert captured["language"] == "zh"            # forced, not auto-detected
+    assert by_type["original"]["source_lang"] == "zh"
+
+
+def test_sessions_stream_silent_falls_back_to_lip(tmp_path, fake_services, monkeypatch):
+    monkeypatch.setattr("app.api.audio.has_audio", lambda p: False)
+    monkeypatch.setattr("app.api.audio.probe_duration", lambda p: 3.0)
+    client, _ = build_client(tmp_path, fake_services, keys_payload={"openai": "o"})
+    files = {"file": ("clip.webm", io.BytesIO(b"fakevideo"), "video/webm")}
+    resp = client.post("/api/v1/sessions/stream", files=files,
+                       data={"target_lang": "en", "source_lang": "auto"})
+    events = _parse_ndjson(resp.text)
+    by_type = {e["type"]: e for e in events}
+    assert by_type["original"]["from_lip"] is True
+    assert by_type["original"]["text"] == "HELLO WORLD"
+    assert by_type["done"]["input_source"] == "lip"
+
+
 def test_vocab_list_and_star(tmp_path, fake_services, monkeypatch):
     monkeypatch.setattr("app.api.audio.has_audio", lambda p: True)
     monkeypatch.setattr("app.api.audio.extract_audio", lambda v, o: True)

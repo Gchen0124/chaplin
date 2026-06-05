@@ -65,30 +65,74 @@ function renderRefined(text, highlights) {
   return html;
 }
 
+function fmt(ms) { return ms >= 1000 ? (ms / 1000).toFixed(1) + "s" : ms + "ms"; }
+function setTime(id, ms) {
+  const el = $(id); el.textContent = fmt(ms);
+  el.classList.toggle("slow", ms >= 3000);
+}
+function resetResults() {
+  ["original", "refined", "vsr"].forEach(id => { $(id).textContent = "…"; });
+  ["lipTime", "origTime", "refTime"].forEach(id => { $(id).textContent = ""; $(id).classList.remove("slow"); });
+  $("srcLang").textContent = ""; $("explanation").textContent = ""; $("totalTime").textContent = "";
+  $("copied").textContent = "";
+}
+
+function handleEvent(ev) {
+  if (ev.type === "lip") {
+    $("vsr").textContent = ev.text || "—"; setTime("lipTime", ev.stage_ms);
+  } else if (ev.type === "original") {
+    $("original").textContent = ev.text || "—";
+    $("srcLang").textContent = ev.source_lang ? `(${ev.source_lang}${ev.from_lip ? " · from lips" : ""})` : "";
+    setTime("origTime", ev.stage_ms);
+  } else if (ev.type === "refined") {
+    $("refined").innerHTML = renderRefined(ev.text, ev.highlights);
+    if (ev.explanation) $("explanation").textContent = ev.explanation;
+    setTime("refTime", ev.stage_ms);
+    lastRefined = ev.text || "";
+    if (lastRefined) {
+      navigator.clipboard.writeText(lastRefined).then(() => {
+        $("copied").textContent = "copied ✓"; setTimeout(() => $("copied").textContent = "", 2000);
+      }).catch(() => {});
+      playTTS(lastRefined);
+    }
+  } else if (ev.type === "done") {
+    $("status").textContent = "Done";
+    $("totalTime").textContent = `total ${fmt(ev.total_ms)}`;
+  } else if (ev.type === "error") {
+    $("status").textContent = `${ev.stage}: ${ev.detail}`;
+  }
+}
+
 async function upload() {
   const blob = new Blob(chunks, { type: mimeType || "video/webm" });
   const form = new FormData();
   form.append("file", blob, "clip.webm");
   form.append("target_lang", $("targetLang").value);
-  const resp = await fetch("/api/v1/sessions", { method: "POST", body: form });
+  form.append("source_lang", $("sourceLang").value);
+  resetResults();
+  $("status").textContent = "Processing…";
+  let resp;
+  try {
+    resp = await fetch("/api/v1/sessions/stream", { method: "POST", body: form });
+  } catch (e) { $("status").textContent = "Network error"; $("record").disabled = false; return; }
   $("record").disabled = false;
-  if (!resp.ok) {
+  if (!resp.ok || !resp.body) {
     const err = await resp.json().catch(() => ({ detail: "Error" }));
-    $("status").textContent = err.detail || "Error";
-    return;
+    $("status").textContent = err.detail || "Error"; return;
   }
-  const data = await resp.json();
-  $("original").textContent = data.original_text || "—";
-  $("srcLang").textContent = data.source_lang ? `(${data.source_lang})` : "";
-  $("refined").innerHTML = renderRefined(data.refined_text, data.highlights);
-  $("vsr").textContent = data.vsr_raw_text || "—";
-  lastRefined = data.refined_text || "";
-  $("status").textContent = "Done";
-  if (lastRefined) {
-    try { await navigator.clipboard.writeText(lastRefined);
-      $("copied").textContent = "copied ✓"; setTimeout(() => $("copied").textContent = "", 2000);
-    } catch (_) {}
-    playTTS(lastRefined);
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (line) { try { handleEvent(JSON.parse(line)); } catch (_) {} }
+    }
   }
 }
 

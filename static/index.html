@@ -21,18 +21,24 @@
         <span class="status" id="status">Camera not started</span>
       </div>
       <div id="results" style="margin-top:18px;">
-        <div class="line"><div class="tag">Original <span id="srcLang"></span></div>
+        <div class="line"><div class="tag">Original <span id="srcLang"></span>
+          <span class="time" id="origTime"></span></div>
           <div class="text" id="original">—</div></div>
         <div class="line"><div class="tag">Refined
           <button id="play" class="secondary" style="padding:2px 8px;font-size:12px;">▶ Play</button>
-          <span class="copied" id="copied"></span></div>
+          <span class="copied" id="copied"></span><span class="time" id="refTime"></span></div>
           <div class="text" id="refined">—</div></div>
-        <div class="line minor"><div class="tag">Lip-read</div>
+        <div class="line minor"><div class="tag">Lip-read <span class="time" id="lipTime"></span></div>
           <div class="text" id="vsr">—</div></div>
         <div class="status" id="explanation"></div>
+        <div class="status" id="totalTime"></div>
       </div>
     </section>
     <aside class="card">
+      <label>I'm speaking (source)
+        <select id="sourceLang"><option value="auto">Auto-detect</option>
+          <option value="en">English</option><option value="zh">Chinese</option></select>
+      </label>
       <label>Target language
         <select id="targetLang"><option value="en">English</option>
           <option value="zh">Chinese</option><option value="es">Spanish</option></select>
