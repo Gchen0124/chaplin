@@ -67,6 +67,11 @@ class Store:
             )
         return sid
 
+    def update_vsr_text(self, session_id: str, vsr_text: str) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE sessions SET vsr_raw_text = ? WHERE id = ?",
+                         (vsr_text, session_id))
+
     def list_sessions(self, limit: int = 50) -> list[dict]:
         with self._conn() as conn:
             rows = conn.execute(

@@ -71,7 +71,9 @@ function setTime(id, ms) {
   el.classList.toggle("slow", ms >= 3000);
 }
 function resetResults() {
-  ["original", "refined", "vsr"].forEach(id => { $(id).textContent = "…"; });
+  $("original").textContent = "…";
+  $("refined").textContent = "…";
+  $("vsr").textContent = $("lipread").checked ? "…" : "(off)";
   ["lipTime", "origTime", "refTime"].forEach(id => { $(id).textContent = ""; $(id).classList.remove("slow"); });
   $("srcLang").textContent = ""; $("explanation").textContent = ""; $("totalTime").textContent = "";
   $("copied").textContent = "";
@@ -105,10 +107,17 @@ function handleEvent(ev) {
 
 async function upload() {
   const blob = new Blob(chunks, { type: mimeType || "video/webm" });
+  // Let the user watch/hear their own recording (audio + video).
+  const rec = $("myRecording");
+  if (rec.src) URL.revokeObjectURL(rec.src);
+  rec.src = URL.createObjectURL(blob);
+  rec.style.display = "block";
+  $("noRecording").style.display = "none";
   const form = new FormData();
   form.append("file", blob, "clip.webm");
   form.append("target_lang", $("targetLang").value);
   form.append("source_lang", $("sourceLang").value);
+  form.append("lipread", $("lipread").checked ? "on" : "off");
   resetResults();
   $("status").textContent = "Processing…";
   let resp;

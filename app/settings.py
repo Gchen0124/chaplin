@@ -10,9 +10,13 @@ class Settings(BaseSettings):
     data_dir: str = os.path.join(os.getcwd(), "data")
     default_target_lang: str = "en"
 
-    # LLM (trainer)
+    # LLM (trainer). openai_base_url lets you point the OpenAI client at any
+    # OpenAI-compatible endpoint, e.g. Gemini:
+    #   CHAPLIN_OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+    #   CHAPLIN_OPENAI_MODEL=gemini-2.0-flash   (put the Gemini key in the OpenAI key field)
     llm_provider: str = "openai"  # "openai" | "ollama"
-    openai_model: str = "gpt-5.4-mini"
+    openai_model: str = "gpt-4.1-mini"
+    openai_base_url: str | None = None
     ollama_model: str = "qwen3:4b"
 
     # Gladia

@@ -119,15 +119,18 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
     @app.post("/api/v1/sessions/stream")
     async def create_session_stream(file: UploadFile = File(...),
                                     target_lang: str = Form(None),
-                                    source_lang: str = Form("auto")):
+                                    source_lang: str = Form("auto"),
+                                    lipread: str = Form("on")):
         target_lang = target_lang or settings.default_target_lang
         forced = None if source_lang in (None, "", "auto") else source_lang
+        lip_on = str(lipread).lower() in ("1", "true", "on", "yes")
         sid_dir, video_path = await _save_upload(file)
         duration = audio.probe_duration(video_path)
         has_voice = audio.has_audio(video_path)
 
         async def gen():
             t0 = time.monotonic()
+            r0 = [None]  # refine start time (mutable for closure)
 
             def ms_since(start):
                 return round((time.monotonic() - start) * 1000)
@@ -135,87 +138,135 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
             def event(payload):
                 return json.dumps(payload, ensure_ascii=False) + "\n"
 
-            loop = asyncio.get_event_loop()
-            vsr_future = loop.run_in_executor(None, vsr.read_lips, video_path)
-            tasks = {vsr_future: "lip"}
+            if duration < MIN_DURATION_S:
+                yield event({"type": "error", "stage": "refined",
+                             "detail": "Clip too short — please record at least 1 second."})
+                return
 
+            loop = asyncio.get_event_loop()
+            has_gladia = has_voice and bool(keys.get("gladia"))
+            # Run lip-reading only when asked, or when it's the only possible input
+            # (silent clip / no Gladia key). It never blocks the refine/TTS path.
+            run_vsr = lip_on or not has_gladia
+            if has_voice and not keys.get("gladia"):
+                yield event({"type": "error", "stage": "original",
+                             "detail": "No Gladia key — falling back to lip-read."})
+
+            tasks = {}
+            vsr_future = None
+            if run_vsr:
+                vsr_future = loop.run_in_executor(None, vsr.read_lips, video_path)
+                tasks[vsr_future] = "lip"
             transcribe_task = None
-            audio_path = None
-            if has_voice and keys.get("gladia"):
+            if has_gladia:
                 transcribe_task = asyncio.create_task(
                     _transcribe_audio(sid_dir, video_path, forced))
                 tasks[transcribe_task] = "original"
-            elif has_voice and not keys.get("gladia"):
-                yield event({"type": "error", "stage": "original",
-                             "detail": "Missing Gladia API key — using lip-read instead."})
 
-            vsr_text = ""
-            transcript = None
-            pending = set(tasks)
-            while pending:
-                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            state = {"vsr_text": "", "audio_path": None, "need_input": True,
+                     "src": "en", "input_source": "lip", "confidence": None,
+                     "sid": None, "refine_out": None, "use_lip_input": False}
+            refine_task = None
+
+            def begin_refine(text, src, conf, isrc):
+                state.update(src=src, input_source=isrc, confidence=conf)
+                if not keys.get("openai"):
+                    return None
+                r0[0] = time.monotonic()
+                return asyncio.create_task(refine_fn(
+                    text, src, target_lang,
+                    client=make_llm_client(keys.get("openai")),
+                    model=settings.openai_model))
+
+            active = set(tasks)
+            while active:
+                done, _ = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
                 for d in done:
-                    kind = tasks[d]
-                    try:
-                        result = d.result()
-                    except Exception as exc:  # noqa: BLE001
-                        yield event({"type": "error", "stage": kind, "detail": str(exc)})
+                    active.discard(d)
+                    if d is refine_task:
+                        try:
+                            state["refine_out"] = d.result()
+                        except Exception as exc:  # noqa: BLE001
+                            yield event({"type": "error", "stage": "refined", "detail": str(exc)})
+                            refine_task = None
+                            continue
+                        out = state["refine_out"]
+                        sid, _ = _persist(store, src=state["src"], target_lang=target_lang,
+                                          original_text=out.original_text, trainer_out=out,
+                                          vsr_text=state["vsr_text"], video_path=video_path,
+                                          audio_path=state["audio_path"], duration=duration,
+                                          confidence=state["confidence"],
+                                          input_source=state["input_source"])
+                        state["sid"] = sid
+                        yield event({"type": "refined", "text": out.refined_text,
+                                     "highlights": [h.model_dump() for h in out.highlights],
+                                     "explanation": out.explanation,
+                                     "stage_ms": ms_since(r0[0])})
+                        refine_task = None
                         continue
+
+                    kind = tasks.get(d)
                     if kind == "lip":
-                        vsr_text = (result or "").strip()
-                        yield event({"type": "lip", "text": vsr_text, "stage_ms": ms_since(t0)})
+                        try:
+                            state["vsr_text"] = (d.result() or "").strip()
+                        except Exception:  # noqa: BLE001
+                            state["vsr_text"] = ""
+                        yield event({"type": "lip", "text": state["vsr_text"],
+                                     "stage_ms": ms_since(t0)})
+                        if state["sid"]:
+                            store.update_vsr_text(state["sid"], state["vsr_text"])
+                        # Start refine from lip if lip is our input source.
+                        if state["need_input"] and (transcribe_task is None or state["use_lip_input"]):
+                            if state["vsr_text"]:
+                                state["need_input"] = False
+                                refine_task = begin_refine(state["vsr_text"], "en", None, "lip")
+                                if refine_task is None:
+                                    yield event({"type": "error", "stage": "refined",
+                                                 "detail": "Missing OpenAI API key."})
+                                else:
+                                    active.add(refine_task)
+                                    yield event({"type": "original", "text": state["vsr_text"],
+                                                 "source_lang": "en", "from_lip": True,
+                                                 "stage_ms": ms_since(t0)})
                     elif kind == "original":
-                        transcript, audio_path = result
+                        try:
+                            transcript, state["audio_path"] = d.result()
+                        except Exception as exc:  # noqa: BLE001
+                            transcript = None
+                            yield event({"type": "error", "stage": "original", "detail": str(exc)})
                         if transcript and transcript.text:
                             yield event({"type": "original", "text": transcript.text,
                                          "source_lang": forced or transcript.language,
                                          "confidence": transcript.confidence,
                                          "stage_ms": ms_since(t0)})
+                            if state["need_input"]:
+                                state["need_input"] = False
+                                refine_task = begin_refine(
+                                    transcript.text, forced or transcript.language,
+                                    transcript.confidence, "audio")
+                                if refine_task is None:
+                                    yield event({"type": "error", "stage": "refined",
+                                                 "detail": "Missing OpenAI API key."})
+                                else:
+                                    active.add(refine_task)
+                        else:
+                            # Audio empty: fall back to lip for the input.
+                            state["use_lip_input"] = True
+                            if state["need_input"] and state["vsr_text"]:
+                                state["need_input"] = False
+                                refine_task = begin_refine(state["vsr_text"], "en", None, "lip")
+                                if refine_task is not None:
+                                    active.add(refine_task)
+                                    yield event({"type": "original", "text": state["vsr_text"],
+                                                 "source_lang": "en", "from_lip": True,
+                                                 "stage_ms": ms_since(t0)})
 
-            # Decide the refine input: prefer audio transcript, else lip-read.
-            if transcript and transcript.text:
-                original_text = transcript.text
-                src = forced or transcript.language
-                confidence = transcript.confidence
-                input_source = "audio"
-            else:
-                original_text = vsr_text
-                src = "en"
-                confidence = None
-                input_source = "lip"
-                yield event({"type": "original", "text": original_text,
-                             "source_lang": src, "confidence": None,
-                             "stage_ms": ms_since(t0), "from_lip": True})
-
-            if not original_text or duration < MIN_DURATION_S:
+            if state["refine_out"] is None:
                 yield event({"type": "error", "stage": "refined",
                              "detail": "No usable speech or lip movement detected."})
                 return
-            if not keys.get("openai"):
-                yield event({"type": "error", "stage": "refined",
-                             "detail": "Missing OpenAI API key."})
-                return
-
-            r0 = time.monotonic()
-            try:
-                llm_client = make_llm_client(keys.get("openai"))
-                trainer_out = await refine_fn(original_text, src, target_lang,
-                                              client=llm_client, model=settings.openai_model)
-            except Exception as exc:  # noqa: BLE001
-                yield event({"type": "error", "stage": "refined", "detail": str(exc)})
-                return
-
-            sid, created_at = _persist(store, src=src, target_lang=target_lang,
-                                       original_text=original_text, trainer_out=trainer_out,
-                                       vsr_text=vsr_text, video_path=video_path,
-                                       audio_path=audio_path, duration=duration,
-                                       confidence=confidence, input_source=input_source)
-            yield event({"type": "refined", "text": trainer_out.refined_text,
-                         "highlights": [h.model_dump() for h in trainer_out.highlights],
-                         "explanation": trainer_out.explanation,
-                         "stage_ms": ms_since(r0)})
-            yield event({"type": "done", "id": sid, "source_lang": src,
-                         "input_source": input_source, "total_ms": ms_since(t0)})
+            yield event({"type": "done", "id": state["sid"], "source_lang": state["src"],
+                         "input_source": state["input_source"], "total_ms": ms_since(t0)})
 
         return StreamingResponse(gen(), media_type="application/x-ndjson")
 

@@ -1,4 +1,5 @@
 import json
+import os
 
 from app.schemas import LanguageTrainerOutput
 
@@ -6,6 +7,13 @@ try:
     from openai import AsyncOpenAI
 except ImportError:  # pragma: no cover
     AsyncOpenAI = None
+
+_SHAPE = (
+    'Respond with ONLY a JSON object of this exact shape: '
+    '{"source_language": str, "original_text": str, "refined_text": str, '
+    '"highlights": [{"original_phrase": str, "refined_phrase": str, "reason": str}], '
+    '"explanation": str}. Keep it short and fast.'
+)
 
 
 def is_translation(source_lang: str, target_lang: str) -> bool:
@@ -36,7 +44,7 @@ def build_messages(text: str, source_lang: str, target_lang: str) -> list[dict]:
             "'explanation' to one short sentence. Return JSON matching the schema."
         )
     return [
-        {"role": "system", "content": system},
+        {"role": "system", "content": system + " " + _SHAPE},
         {"role": "user", "content": f"Input:\n\n{text}"},
     ]
 
@@ -46,14 +54,7 @@ async def refine(text: str, source_lang: str, target_lang: str, *, client, model
     response = await client.chat.completions.create(
         model=model,
         messages=build_messages(text, source_lang, target_lang),
-        response_format={
-            "type": "json_schema",
-            "json_schema": {
-                "name": "language_trainer_output",
-                "schema": LanguageTrainerOutput.model_json_schema(),
-                "strict": True,
-            },
-        },
+        response_format={"type": "json_object"},
     )
     content = response.choices[0].message.content
     if isinstance(content, list):
@@ -64,7 +65,8 @@ async def refine(text: str, source_lang: str, target_lang: str, *, client, model
     return LanguageTrainerOutput.model_validate_json(json.dumps(json.loads(content)))
 
 
-def make_openai_client(api_key: str):
+def make_openai_client(api_key: str, base_url: str | None = None):
     if AsyncOpenAI is None:
         raise RuntimeError("openai package not installed")
-    return AsyncOpenAI(api_key=api_key)
+    base_url = base_url or os.getenv("CHAPLIN_OPENAI_BASE_URL") or None
+    return AsyncOpenAI(api_key=api_key, base_url=base_url)

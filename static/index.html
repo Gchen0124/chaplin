@@ -43,6 +43,13 @@
         <select id="targetLang"><option value="en">English</option>
           <option value="zh">Chinese</option><option value="es">Spanish</option></select>
       </label>
+      <label style="flex-direction:row;align-items:center;gap:8px;">
+        <input type="checkbox" id="lipread" checked style="width:auto;" />
+        Lip-read line (extra CPU, runs in background)
+      </label>
+      <h4 style="margin:6px 0;">Your recording</h4>
+      <video id="myRecording" controls playsinline style="width:100%;display:none;border-radius:6px;"></video>
+      <div class="status" id="noRecording">Record once to play it back here.</div>
       <h4 style="margin:6px 0;">API keys</h4>
       <div id="keyRows"></div>
     </aside>
