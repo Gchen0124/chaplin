@@ -5,6 +5,10 @@ from app.schemas import (
     VocabItem,
     ConfigResponse,
     KeysRequest,
+    DemoDraft,
+    DemoUtterance,
+    UtteranceEdit,
+    UtterancesPatch,
 )
 
 
@@ -55,3 +59,24 @@ def test_config_response():
     cfg = ConfigResponse(keys_set={"gladia": True, "elevenlabs": False, "openai": True},
                          default_lang="en", voices=["Rachel"])
     assert cfg.keys_set["gladia"] is True
+
+
+def test_demo_utterance_and_draft():
+    u = DemoUtterance(
+        id="u1", idx=0, start_s=1.0, end_s=2.5,
+        original_text="打开设置", english_text="Open Settings.", source_lang="zh",
+    )
+    draft = DemoDraft(
+        id="d1", created_at="2026-08-15T00:00:00+00:00",
+        source_lang="zh", target_lang="en", duration_s=8.0,
+        status="transcribed", warning=None, utterances=[u],
+    )
+    assert draft.utterances[0].english_text == "Open Settings."
+    assert draft.warning is None
+
+
+def test_utterances_patch_only_allows_english_text():
+    patch = UtterancesPatch(utterances=[UtteranceEdit(id="u1", english_text="Open settings.")])
+    assert patch.utterances[0].id == "u1"
+    dumped = UtteranceEdit(id="u1", english_text="x").model_dump()
+    assert set(dumped) == {"id", "english_text"}

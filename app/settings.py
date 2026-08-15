@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     def recordings_dir(self) -> str:
         return os.path.join(self.data_dir, "recordings")
 
+    @property
+    def demos_dir(self) -> str:
+        return os.path.join(self.data_dir, "demos")
+
 
 @lru_cache
 def get_settings() -> Settings:
