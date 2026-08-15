@@ -85,3 +85,14 @@ python web_chaplin.py            # serves http://127.0.0.1:8765
 
 Recordings are saved under `data/recordings/<id>/` (`clip.webm` + `audio.wav`) as
 ground-truth pairs for future model fine-tuning. Run the test suite with `pytest`.
+
+## Demo Studio
+
+Record a product-demo screen take, edit the English lines, and export an MP4
+with an ElevenLabs voice track and burned-in captions.
+
+1. Open http://127.0.0.1:8765/demo and click **Start screen**.
+2. Grant screen + microphone (camera is optional preview only).
+3. **Record**, narrate in Chinese or English, **Stop**.
+4. Edit the English column. **Generate voice & export** downloads
+   `chaplin-demo-<id>.mp4` (screen + English voice + captions).

@@ -65,6 +65,13 @@ def build_demo_client(tmp_path, keys_payload=None, export_fn=fake_export_demo):
     return TestClient(app), store
 
 
+def test_demo_page_served(tmp_path):
+    client, _ = build_demo_client(tmp_path)
+    resp = client.get("/demo")
+    assert resp.status_code == 200
+    assert b"Demo Studio" in resp.content
+
+
 def test_post_demo_happy_path(tmp_path, monkeypatch):
     monkeypatch.setattr("app.api.audio.has_audio", lambda p: True)
     monkeypatch.setattr("app.api.audio.extract_audio", lambda v, o: True)

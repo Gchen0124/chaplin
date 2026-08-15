@@ -37,3 +37,11 @@ mark { background: #b9f3d0; color: #0b0d0c; border-radius: 3px; padding: 0 3px; 
 .key-row { display: flex; justify-content: space-between; align-items: center;
   font-size: 13px; padding: 6px 0; }
 @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+#screenPreview { transform: none; background: #050505; min-height: 240px; }
+#camPreview { width: 160px; transform: scaleX(-1); }
+.demo-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.demo-table th, .demo-table td { border-bottom: 1px solid rgba(255,255,255,0.1); padding: 8px; vertical-align: top; text-align: left; }
+.demo-table textarea { min-height: 56px; resize: vertical; }
+.demo-editor { grid-column: 1 / -1; }
+.demo-table .time-cell { white-space: nowrap; color: #8aa; font-variant-numeric: tabular-nums; width: 7em; }
+.demo-table .orig-cell { color: #c5cec9; width: 32%; }

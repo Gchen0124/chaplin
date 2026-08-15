@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chaplin · Demo Studio</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="topbar">
+    <strong>Chaplin · Demo Studio</strong>
+    <nav><a href="/index.html">Practice</a><a href="/demo">Demo</a><a href="/review.html">Review</a></nav>
+  </div>
+  <main>
+    <section class="card">
+      <video id="screenPreview" autoplay playsinline muted></video>
+      <div class="controls">
+        <button id="startScreen">Start screen</button>
+        <button id="record" disabled>● Record</button>
+        <button id="stop" class="secondary" disabled>Stop</button>
+        <span class="status" id="status">Screen not started</span>
+      </div>
+    </section>
+    <aside class="card">
+      <video id="camPreview" autoplay playsinline muted></video>
+      <p class="status">Camera is preview only — it is not in the export.</p>
+      <label>I'm speaking (source)
+        <select id="sourceLang">
+          <option value="auto">Auto-detect</option>
+          <option value="en">English</option>
+          <option value="zh">Chinese</option>
+        </select>
+      </label>
+      <label>Target language
+        <select id="targetLang">
+          <option value="en">English</option>
+          <option value="zh">Chinese</option>
+          <option value="es">Spanish</option>
+        </select>
+      </label>
+      <h4 style="margin:6px 0;">API keys</h4>
+      <div id="keyRows"></div>
+    </aside>
+    <section class="card demo-editor" id="editor" hidden>
+      <h4 style="margin:0 0 10px;">English lines</h4>
+      <table class="demo-table">
+        <thead>
+          <tr><th>Time</th><th>Original</th><th>English (editable)</th></tr>
+        </thead>
+        <tbody id="utterances"></tbody>
+      </table>
+      <div class="controls">
+        <button id="exportBtn">Generate voice &amp; export</button>
+        <span class="status" id="exportStatus"></span>
+      </div>
+      <video id="exportPlayer" controls playsinline style="width:100%;margin-top:14px;display:none;transform:none;"></video>
+      <p><a id="downloadLink" hidden>Download MP4</a></p>
+    </section>
+  </main>
+  <script src="/demo.js"></script>
+</body>
+</html>
