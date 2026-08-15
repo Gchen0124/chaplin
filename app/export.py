@@ -129,3 +129,36 @@ def mux_demo(*, screen_path: str, voice_clips: list[tuple[str, Alignment]],
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg mux failed: {result.stderr[-800:]}")
+
+
+def _mp3_duration(path: str) -> float:
+    from app.audio import probe_duration
+    return probe_duration(path) or 0.5
+
+
+async def export_demo(*, utterances: list[dict], video_duration: float,
+                      screen_path: str, demo_dir: str,
+                      synthesize_fn, voice_id: str, tts_key: str, model_id: str) -> str:
+    voice_dir = os.path.join(demo_dir, "voice")
+    os.makedirs(voice_dir, exist_ok=True)
+    clip_paths, durs, starts = [], [], []
+    for u in utterances:
+        idx = u["idx"]
+        dest = os.path.join(voice_dir, f"{idx:03d}.mp3")
+        if not (os.path.isfile(dest) and os.path.getsize(dest) > 0):
+            try:
+                data = await synthesize_fn(u["english_text"], voice_id, tts_key, model_id)
+            except Exception as exc:
+                raise RuntimeError(f"tts:{idx}:{exc}") from exc
+            with open(dest, "wb") as fh:
+                fh.write(data)
+        clip_paths.append(dest)
+        starts.append(float(u["start_s"]))
+        durs.append(_mp3_duration(dest))
+    plans = plan_alignment(starts=starts, clip_durations=durs, video_duration=video_duration)
+    ass_path = os.path.join(demo_dir, "captions.ass")
+    write_ass(utterances, ass_path)
+    out_path = os.path.join(demo_dir, "export.mp4")
+    mux_demo(screen_path=screen_path, voice_clips=list(zip(clip_paths, plans)),
+             ass_path=ass_path, out_path=out_path, video_duration=video_duration)
+    return out_path
