@@ -20,7 +20,34 @@ def probe_duration(path: str) -> float:
     try:
         return float((result.stdout or "").strip())
     except ValueError:
-        return 0.0
+        return _probe_packet_duration(path)
+
+
+def _probe_packet_duration(path: str) -> float:
+    """Fallback for live-style WebM (MediaRecorder) with no Duration element.
+
+    Chrome/Electron's MediaRecorder writes a WebM segment without a duration, so
+    ffprobe reports ``N/A`` and the file looks zero-length. Sum the last packet
+    time plus its duration on the video (or audio) stream instead.
+    """
+    best = 0.0
+    for stream in ("v:0", "a:0"):
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", stream,
+             "-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0", path],
+            capture_output=True, text=True,
+        )
+        for line in (result.stdout or "").splitlines():
+            fields = line.strip().split(",")
+            try:
+                pts = float(fields[0])
+                dur = float(fields[1]) if len(fields) > 1 and fields[1] else 0.0
+            except (ValueError, IndexError):
+                continue
+            best = max(best, pts + dur)
+        if best:
+            break
+    return best
 
 
 def extract_audio(video_path: str, out_path: str) -> bool:
