@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Chaplin needs the microphone to turn your speech into polished text.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Chaplin uses the camera to record you while you speak and to read lips.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Chaplin records your screen for Demo Studio walkthroughs.</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSCameraUseContinuityCameraDeviceType</key>
+    <true/>
+</dict>
+</plist>

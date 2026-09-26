@@ -1,0 +1,14 @@
+{
+  "name": "chaplin-mac",
+  "version": "1.0.0",
+  "description": "Chaplin for macOS — native window around the Chaplin language trainer",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "package": "./build_app.sh"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}

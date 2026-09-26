@@ -33,3 +33,4 @@ benchmarks/**
 *.mp4
 data/
 .chaplin/
+node_modules/

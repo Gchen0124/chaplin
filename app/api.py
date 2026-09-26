@@ -8,7 +8,10 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import audio
+from app import doubao_asr
+from app import live as live_module
 from app.export import export_demo as default_export_demo
+from app.export import mux_original as default_mux_original
 from app.keys import KeyStore
 from app.schemas import (ConfigResponse, DemoDraft, DemoUtterance, KeysRequest,
                          SessionResult, UtterancesPatch, VocabItem)
@@ -23,11 +26,26 @@ MIN_DURATION_S = 1.0
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
 
 
+class _NoCacheStaticFiles(StaticFiles):
+    """StaticFiles that forbids caching.
+
+    Without a Cache-Control header Chromium applies heuristic caching to the
+    app's JS/CSS, so a rebuilt or patched app can keep running stale assets.
+    These files are tiny and local, so revalidate every time instead.
+    """
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+
 def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
                transcribe_fn=default_transcribe, refine_fn=default_refine,
                synthesize_fn=default_synthesize, make_llm_client=make_openai_client,
                transcribe_demo_fn=default_transcribe_demo,
-               export_demo_fn=default_export_demo) -> FastAPI:
+               export_demo_fn=default_export_demo,
+               mux_original_fn=default_mux_original) -> FastAPI:
     app = FastAPI(title="Chaplin Language Trainer", version="1.0.0")
     app.state.settings = settings
     app.state.store = store
@@ -318,6 +336,7 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
 
     @app.post("/api/v1/demos", response_model=DemoDraft)
     async def create_demo_route(file: UploadFile = File(...),
+                                camera: UploadFile | None = File(None),
                                 target_lang: str = Form(None),
                                 source_lang: str = Form("auto")):
         target_lang = target_lang or settings.default_target_lang
@@ -328,12 +347,20 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
         screen_path = os.path.join(did_dir, "screen.webm")
         with open(screen_path, "wb") as fh:
             fh.write(await file.read())
+        cam_path = None
+        if camera is not None:
+            raw = await camera.read()
+            if raw:
+                cam_path = os.path.join(did_dir, "cam.webm")
+                with open(cam_path, "wb") as fh:
+                    fh.write(raw)
         duration = audio.probe_duration(screen_path)
         if duration < MIN_DURATION_S:
             raise HTTPException(422, detail={"error": "Clip too short.", "stage": "save"})
         store.create_demo(
             demo_id=did, source_lang=source_lang or "auto", target_lang=target_lang,
-            duration_s=duration, screen_path=screen_path, status="saved",
+            duration_s=duration, screen_path=screen_path, cam_path=cam_path,
+            status="saved",
         )
         if not keys.get("gladia"):
             raise HTTPException(400, "Missing Gladia API key.")
@@ -391,6 +418,84 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
                           warning=warning)
         return _demo_draft(store.get_demo(did))
 
+    @app.post("/api/v1/demos/audio", response_model=DemoDraft)
+    async def create_demo_from_audio(file: UploadFile = File(...),
+                                     target_lang: str = Form(None),
+                                     source_lang: str = Form("auto"),
+                                     polish: str = Form("off")):
+        """Transcribe a mic sidecar. polish=off keeps Gladia translation on the original clock."""
+        target_lang = target_lang or settings.default_target_lang
+        forced = None if source_lang in (None, "", "auto") else source_lang
+        do_polish = str(polish).lower() in ("1", "true", "on", "yes")
+        did = _new_id()
+        did_dir = os.path.join(settings.demos_dir, did)
+        os.makedirs(did_dir, exist_ok=True)
+        raw_name = file.filename or "audio.wav"
+        ext = os.path.splitext(raw_name)[1].lower() or ".wav"
+        uploaded = os.path.join(did_dir, f"upload{ext}")
+        with open(uploaded, "wb") as fh:
+            fh.write(await file.read())
+        audio_path = os.path.join(did_dir, "audio.wav")
+        if ext == ".wav":
+            os.replace(uploaded, audio_path)
+        elif not audio.extract_audio(uploaded, audio_path):
+            raise HTTPException(422, detail={"error": "Could not read audio.", "stage": "audio"})
+        duration = audio.probe_duration(audio_path)
+        if duration < MIN_DURATION_S:
+            raise HTTPException(422, detail={"error": "Clip too short.", "stage": "save"})
+        store.create_demo(
+            demo_id=did, source_lang=source_lang or "auto", target_lang=target_lang,
+            duration_s=duration, screen_path=audio_path, audio_path=audio_path,
+            status="saved",
+        )
+        if not keys.get("gladia"):
+            raise HTTPException(400, "Missing Gladia API key.")
+        if do_polish and not keys.get("openai"):
+            raise HTTPException(400, "Missing OpenAI API key.")
+        try:
+            tr = await transcribe_demo_fn(
+                audio_path, key=keys.get("gladia"),
+                base_url=settings.gladia_base_url, target_lang=target_lang,
+                language=forced,
+            )
+        except Exception as exc:
+            store.update_demo(did, status="error", error=str(exc))
+            raise HTTPException(502, detail={"error": str(exc), "stage": "gladia"}) from exc
+        if not tr.utterances or not any(
+                (u.original_text or u.english_text) for u in tr.utterances):
+            raise HTTPException(422, detail={"error": "No speech detected.", "stage": "gladia"})
+        warning = None
+        llm_client = make_llm_client(keys.get("openai")) if do_polish else None
+        polished = []
+        for i, u in enumerate(tr.utterances):
+            src = u.source_lang or tr.language or "en"
+            english = u.english_text
+            if do_polish and llm_client is not None:
+                try:
+                    same = (u.english_text or "").strip() == (u.original_text or "").strip()
+                    src_code = src.split("-")[0].lower()
+                    tgt_code = target_lang.split("-")[0].lower()
+                    if same and src_code != tgt_code:
+                        out = await refine_fn(
+                            u.original_text, src, target_lang,
+                            client=llm_client, model=settings.openai_model)
+                    else:
+                        out = await refine_fn(
+                            u.english_text, target_lang, target_lang,
+                            client=llm_client, model=settings.openai_model)
+                    english = out.refined_text
+                except Exception:
+                    warning = f"polish failed on utterance {i}"
+            polished.append({
+                "start_s": u.start_s, "end_s": u.end_s,
+                "original_text": u.original_text, "english_text": english,
+                "source_lang": src,
+            })
+        store.replace_utterances(did, polished)
+        store.update_demo(did, status="transcribed", source_lang=tr.language,
+                          warning=warning)
+        return _demo_draft(store.get_demo(did))
+
     @app.get("/api/v1/demos/{demo_id}", response_model=DemoDraft)
     def get_demo_route(demo_id: str):
         row = store.get_demo(demo_id)
@@ -406,6 +511,64 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
         store.update_utterance_texts(
             demo_id, [(e.id, e.english_text) for e in body.utterances])
         return _demo_draft(store.get_demo(demo_id))
+
+    @app.post("/api/v1/demos/{demo_id}/voice")
+    async def export_voice_only(demo_id: str):
+        """Return one continuous English MP3 (no video mux). For Recordly."""
+        from app.export import join_english_script
+        row = store.get_demo(demo_id)
+        if not row:
+            raise HTTPException(404, "Demo not found.")
+        if not keys.get("elevenlabs"):
+            raise HTTPException(400, "Missing ElevenLabs API key.")
+        utterances = [u for u in row["utterances"] if (u.get("english_text") or "").strip()]
+        if not utterances:
+            raise HTTPException(422, detail={"error": "No English lines to speak.", "stage": "tts"})
+        script = join_english_script(utterances)
+        try:
+            data = await synthesize_fn(
+                script, settings.elevenlabs_voice_id,
+                keys.get("elevenlabs"), settings.elevenlabs_model_id,
+            )
+        except Exception as exc:
+            raise HTTPException(502, detail={"error": str(exc), "stage": "tts", "idx": 0}) from exc
+        demo_dir = os.path.dirname(row["audio_path"] or row["screen_path"])
+        voice_dir = os.path.join(demo_dir, "voice")
+        os.makedirs(voice_dir, exist_ok=True)
+        dest = os.path.join(voice_dir, "full.mp3")
+        with open(dest, "wb") as fh:
+            fh.write(data)
+        return Response(content=data, media_type="audio/mpeg",
+                        headers={"Content-Disposition": f'attachment; filename="english-{demo_id}.mp3"'})
+
+    @app.post("/api/v1/demos/{demo_id}/voice-aligned")
+    async def export_voice_aligned(demo_id: str):
+        """Per-sentence TTS locked to Gladia times; file length = original take."""
+        from app.export import export_aligned_voice
+        row = store.get_demo(demo_id)
+        if not row:
+            raise HTTPException(404, "Demo not found.")
+        if not keys.get("elevenlabs"):
+            raise HTTPException(400, "Missing ElevenLabs API key.")
+        utterances = [u for u in row["utterances"] if (u.get("english_text") or "").strip()]
+        if not utterances:
+            raise HTTPException(422, detail={"error": "No English lines to speak.", "stage": "tts"})
+        demo_dir = os.path.dirname(row["audio_path"] or row["screen_path"])
+        try:
+            out_path = await export_aligned_voice(
+                utterances=utterances,
+                duration_s=row["duration_s"] or 0.0,
+                demo_dir=demo_dir,
+                synthesize_fn=synthesize_fn,
+                voice_id=settings.elevenlabs_voice_id,
+                tts_key=keys.get("elevenlabs"),
+                model_id=settings.elevenlabs_model_id,
+            )
+        except RuntimeError as exc:
+            msg = str(exc)
+            raise HTTPException(502, detail={"error": msg, "stage": "tts"}) from exc
+        return FileResponse(out_path, media_type="audio/mpeg",
+                            filename=f"english-aligned-{demo_id}.mp3")
 
     @app.post("/api/v1/demos/{demo_id}/export")
     async def export_demo_route(demo_id: str):
@@ -448,8 +611,43 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
         return FileResponse(row["export_path"], media_type="video/mp4",
                             filename=f"chaplin-demo-{demo_id}.mp4")
 
+    @app.post("/api/v1/demos/{demo_id}/original")
+    def export_original_route(demo_id: str):
+        row = store.get_demo(demo_id)
+        if not row:
+            raise HTTPException(404, "Demo not found.")
+        demo_dir = os.path.dirname(row["screen_path"])
+        out_path = os.path.join(demo_dir, "original.mp4")
+        try:
+            mux_original_fn(
+                screen_path=row["screen_path"],
+                cam_path=row.get("cam_path"),
+                out_path=out_path,
+                video_duration=row["duration_s"] or 0.0,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(502, detail={"error": str(exc), "stage": "mux"}) from exc
+        store.update_demo(demo_id, original_path=out_path)
+        return FileResponse(out_path, media_type="video/mp4",
+                            filename=f"chaplin-demo-{demo_id}-original.mp4")
+
+    @app.get("/api/v1/demos/{demo_id}/original")
+    def get_original(demo_id: str):
+        row = store.get_demo(demo_id)
+        if not row or not row.get("original_path") or not os.path.isfile(row["original_path"]):
+            raise HTTPException(404, "Original export not found.")
+        return FileResponse(row["original_path"], media_type="video/mp4",
+                            filename=f"chaplin-demo-{demo_id}-original.mp4")
+
+    # Live iFlytek transcription + next-sentence hints over WebSocket.
+    # Registered before the catch-all static mount so /ws/live resolves.
+    live_module.attach(app, keys)
+
+    # Doubao (Volcengine) streaming ASR for the camera bubble captions.
+    doubao_asr.attach(app, keys)
+
     if os.path.isdir(STATIC_DIR):
-        app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+        app.mount("/", _NoCacheStaticFiles(directory=STATIC_DIR, html=True), name="static")
 
     return app
 
