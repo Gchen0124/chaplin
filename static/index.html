@@ -9,7 +9,7 @@
 <body>
   <div class="topbar">
     <strong>Chaplin · Language Trainer</strong>
-    <nav><a href="/index.html">Practice</a><a href="/demo">Demo</a><a href="/review.html">Review</a></nav>
+    <nav><a href="/index.html">Practice</a><a href="/live.html">Live</a><a href="/demo">Demo</a><a href="/review.html">Review</a></nav>
   </div>
   <main>
     <section class="card">
@@ -22,11 +22,12 @@
       </div>
       <div id="results" style="margin-top:18px;">
         <div class="line"><div class="tag">Original <span id="srcLang"></span>
+          <span class="copied" id="copied"></span>
           <span class="time" id="origTime"></span></div>
           <div class="text" id="original">—</div></div>
         <div class="line"><div class="tag">Refined
           <button id="play" class="secondary" style="padding:2px 8px;font-size:12px;">▶ Play</button>
-          <span class="copied" id="copied"></span><span class="time" id="refTime"></span></div>
+          <span class="time" id="refTime"></span></div>
           <div class="text" id="refined">—</div></div>
         <div class="line minor"><div class="tag">Lip-read <span class="time" id="lipTime"></span></div>
           <div class="text" id="vsr">—</div></div>
@@ -46,6 +47,26 @@
       <label style="flex-direction:row;align-items:center;gap:8px;">
         <input type="checkbox" id="lipread" checked style="width:auto;" />
         Lip-read line (extra CPU, runs in background)
+      </label>
+      <h4 style="margin:6px 0;">Shortcut</h4>
+      <label>Summon + record
+        <input id="hotkeyInput" readonly placeholder="Click, then press keys" />
+      </label>
+      <div class="status" id="hotkeyStatus">Click the box and press a combo (need ⌃/⌥/⌘).</div>
+      <h4 style="margin:6px 0;">Camera pop-up</h4>
+      <label>Layout
+        <select id="bubbleLayout">
+          <option value="corner">Bottom-right bubble</option>
+          <option value="meeting">Centered tall (meeting)</option>
+        </select>
+      </label>
+      <label>Shape
+        <select id="bubbleShape">
+          <option value="wide">Wide · 4:3</option>
+          <option value="square">Square</option>
+          <option value="portrait">Portrait · 9:16</option>
+          <option value="circle">Circle</option>
+        </select>
       </label>
       <h4 style="margin:6px 0;">Your recording</h4>
       <video id="myRecording" controls playsinline style="width:100%;display:none;border-radius:6px;"></video>

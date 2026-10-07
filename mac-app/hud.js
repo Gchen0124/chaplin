@@ -15,6 +15,7 @@ const views = {
 
 const timerEl = document.getElementById('timer');
 const doneLabel = document.getElementById('doneLabel');
+const doneText = document.getElementById('doneText');
 const errorMsg = document.getElementById('errorMsg');
 
 let tick = null;
@@ -59,6 +60,7 @@ function freezeTimer() {
 
 function apply(payload) {
   const state = typeof payload === 'string' ? payload : (payload && payload.state) || 'idle';
+  document.body.classList.toggle('tall', state === 'done' || state === 'error');
   if (state === 'recording') {
     show('recording');
     runTimer(last !== 'paused');
@@ -75,7 +77,7 @@ function apply(payload) {
   last = state;
   if (state === 'processing') return show('processing');
   if (state === 'done') {
-    doneLabel.textContent = (payload && payload.text) || 'Copied to clipboard';
+    doneText.textContent = (payload && payload.text) || '';
     return show('done');
   }
   if (state === 'error') {

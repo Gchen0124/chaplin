@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import time
+import uuid
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -48,6 +49,27 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
                mux_original_fn=default_mux_original) -> FastAPI:
     app = FastAPI(title="Chaplin Language Trainer", version="1.0.0")
     app.state.settings = settings
+
+    def _have_llm() -> bool:
+        return bool(keys.get("opencode") or keys.get("openai"))
+
+    def _llm_client():
+        """OpenAI-compatible client. Prefers the opencode gateway when keyed."""
+        oc = keys.get("opencode")
+        if oc:
+            from openai import AsyncOpenAI
+            return AsyncOpenAI(
+                api_key=oc,
+                base_url=os.getenv("CHAPLIN_OPENCODE_BASE_URL", "https://opencode.ai/zen/go/v1"),
+                default_headers={"x-opencode-session": str(uuid.uuid4())},
+            )
+        return make_llm_client(keys.get("openai"))
+
+    def _llm_model() -> str:
+        if keys.get("opencode"):
+            return os.getenv("CHAPLIN_OPENCODE_MODEL", "deepseek-v4-flash")
+        return settings.openai_model
+
     app.state.store = store
     app.state.keys = keys
     app.state.vsr = vsr
@@ -121,12 +143,12 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
 
         if not original_text or duration < MIN_DURATION_S:
             raise HTTPException(422, "No usable speech or lip movement detected.")
-        if not keys.get("openai"):
+        if not _have_llm():
             raise HTTPException(400, "Missing OpenAI API key.")
 
-        llm_client = make_llm_client(keys.get("openai"))
+        llm_client = _llm_client()
         trainer_out = await refine_fn(original_text, src, target_lang,
-                                      client=llm_client, model=settings.openai_model)
+                                      client=llm_client, model=_llm_model())
         sid, created_at = _persist(store, src=src, target_lang=target_lang,
                                    original_text=original_text, trainer_out=trainer_out,
                                    vsr_text=vsr_text, video_path=video_path,
@@ -143,7 +165,8 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
     async def create_session_stream(file: UploadFile = File(...),
                                     target_lang: str = Form(None),
                                     source_lang: str = Form("auto"),
-                                    lipread: str = Form("on")):
+                                    lipread: str = Form("on"),
+                                    live_text: str = Form("")):
         target_lang = target_lang or settings.default_target_lang
         forced = None if source_lang in (None, "", "auto") else source_lang
         lip_on = str(lipread).lower() in ("1", "true", "on", "yes")
@@ -164,6 +187,36 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
             if duration < MIN_DURATION_S:
                 yield event({"type": "error", "stage": "refined",
                              "detail": "Clip too short — please record at least 1 second."})
+                return
+
+            live = (live_text or "").strip()
+            if live and _have_llm():
+                # Fast path: the client already streamed a live transcript
+                # (Doubao). Use it as the original so we skip the whole second
+                # ASR pass and refine immediately.
+                src = forced or "en"
+                yield event({"type": "original", "text": live,
+                             "source_lang": src, "from_lip": False,
+                             "stage_ms": ms_since(t0)})
+                r0[0] = time.monotonic()
+                try:
+                    out = await refine_fn(live, src, target_lang,
+                                          client=_llm_client(),
+                                          model=_llm_model())
+                except Exception as exc:  # noqa: BLE001
+                    yield event({"type": "error", "stage": "refined", "detail": str(exc)})
+                    return
+                sid, _ = _persist(store, src=src, target_lang=target_lang,
+                                  original_text=live,
+                                  trainer_out=out, vsr_text="", video_path=video_path,
+                                  audio_path=None, duration=duration, confidence=None,
+                                  input_source="live")
+                yield event({"type": "refined", "text": out.refined_text,
+                             "highlights": [h.model_dump() for h in out.highlights],
+                             "explanation": out.explanation,
+                             "stage_ms": ms_since(r0[0])})
+                yield event({"type": "done", "id": sid, "source_lang": src,
+                             "input_source": "live", "total_ms": ms_since(t0)})
                 return
 
             loop = asyncio.get_event_loop()
@@ -193,13 +246,13 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
 
             def begin_refine(text, src, conf, isrc):
                 state.update(src=src, input_source=isrc, confidence=conf)
-                if not keys.get("openai"):
+                if not _have_llm():
                     return None
                 r0[0] = time.monotonic()
                 return asyncio.create_task(refine_fn(
                     text, src, target_lang,
-                    client=make_llm_client(keys.get("openai")),
-                    model=settings.openai_model))
+                    client=_llm_client(),
+                    model=_llm_model()))
 
             active = set(tasks)
             while active:
@@ -364,7 +417,7 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
         )
         if not keys.get("gladia"):
             raise HTTPException(400, "Missing Gladia API key.")
-        if not keys.get("openai"):
+        if not _have_llm():
             raise HTTPException(400, "Missing OpenAI API key.")
         if not audio.has_audio(screen_path):
             store.update_demo(did, status="error", error="No audio track.")
@@ -388,7 +441,7 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
             raise HTTPException(422, detail={"error": "No speech detected.", "stage": "gladia"})
 
         warning = None
-        llm_client = make_llm_client(keys.get("openai"))
+        llm_client = _llm_client()
         polished = []
         for i, u in enumerate(tr.utterances):
             src = u.source_lang or tr.language or "en"
@@ -400,11 +453,11 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
                 if same and src_code != tgt_code:
                     out = await refine_fn(
                         u.original_text, src, target_lang,
-                        client=llm_client, model=settings.openai_model)
+                        client=llm_client, model=_llm_model())
                 else:
                     out = await refine_fn(
                         u.english_text, target_lang, target_lang,
-                        client=llm_client, model=settings.openai_model)
+                        client=llm_client, model=_llm_model())
                 english = out.refined_text
             except Exception:
                 warning = f"polish failed on utterance {i}"
@@ -450,7 +503,7 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
         )
         if not keys.get("gladia"):
             raise HTTPException(400, "Missing Gladia API key.")
-        if do_polish and not keys.get("openai"):
+        if do_polish and not _have_llm():
             raise HTTPException(400, "Missing OpenAI API key.")
         try:
             tr = await transcribe_demo_fn(
@@ -465,7 +518,7 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
                 (u.original_text or u.english_text) for u in tr.utterances):
             raise HTTPException(422, detail={"error": "No speech detected.", "stage": "gladia"})
         warning = None
-        llm_client = make_llm_client(keys.get("openai")) if do_polish else None
+        llm_client = _llm_client() if do_polish else None
         polished = []
         for i, u in enumerate(tr.utterances):
             src = u.source_lang or tr.language or "en"
@@ -478,11 +531,11 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
                     if same and src_code != tgt_code:
                         out = await refine_fn(
                             u.original_text, src, target_lang,
-                            client=llm_client, model=settings.openai_model)
+                            client=llm_client, model=_llm_model())
                     else:
                         out = await refine_fn(
                             u.english_text, target_lang, target_lang,
-                            client=llm_client, model=settings.openai_model)
+                            client=llm_client, model=_llm_model())
                     english = out.refined_text
                 except Exception:
                     warning = f"polish failed on utterance {i}"

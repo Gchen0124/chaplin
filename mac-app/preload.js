@@ -30,6 +30,16 @@ contextBridge.exposeInMainWorld('chaplinShell', {
   },
   transcript: (text) => ipcRenderer.send('bubble:transcript', text),
   paste: () => ipcRenderer.send('shell:paste'),
+  onBubbleMode: (handler) => {
+    const listener = (_event, mode) => handler(mode);
+    ipcRenderer.on('bubble:mode', listener);
+    return () => ipcRenderer.removeListener('bubble:mode', listener);
+  },
+  getBubbleMode: () => ipcRenderer.invoke('shell:get-bubble-mode'),
+  getLiveTranscript: () => ipcRenderer.invoke('shell:get-live-transcript'),
+  getHotkey: () => ipcRenderer.invoke('shell:get-hotkey'),
+  setHotkey: (accel) => ipcRenderer.invoke('shell:set-hotkey', accel),
+  setBubbleMode: (mode) => ipcRenderer.send('shell:bubble-mode', mode),
   hudAction: (action) => ipcRenderer.send('hud:action', action),
   onHudAction: (handler) => {
     const listener = (_event, action) => handler(action);

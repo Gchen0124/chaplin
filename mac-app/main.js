@@ -28,6 +28,7 @@ const SUMMON_HOTKEY = 'Control+Alt+R';
 const SUMMON_FALLBACKS = ['Control+Alt+Command+R', 'Control+Shift+Alt+R'];
 
 let summonHotkey = null;
+let savedHotkey = SUMMON_HOTKEY;   // user-configurable; persisted in ui.json
 let isQuitting = false;
 let appPageReady = false;
 let pendingToggle = false;
@@ -39,6 +40,54 @@ let tray = null;
 let lastHudState = 'idle';
 let liveTranscript = '';   // latest Doubao live transcript from the bubble
 let autoPaste = true;      // paste the finished text into the focused app
+
+// Camera bubble appearance. Layout: corner | meeting. Shape (corner only):
+// wide (4:3) | square | portrait (9:16) | circle.
+let bubbleMode = { layout: 'corner', shape: 'wide' };
+const BUBBLE_WIDTH = { wide: 248, square: 232, portrait: 200, circle: 232 };
+const BUBBLE_RATIO = { wide: 0.75, square: 1, portrait: 16 / 9, circle: 1 };
+const BUBBLE_CAPS = 84;
+
+function uiStorePath() {
+  return path.join(app.getPath('userData'), 'ui.json');
+}
+
+function loadBubbleMode() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(uiStorePath(), 'utf8'));
+    if (raw && raw.bubbleMode) bubbleMode = { ...bubbleMode, ...raw.bubbleMode };
+    if (raw && typeof raw.hotkey === 'string' && raw.hotkey) savedHotkey = raw.hotkey;
+  } catch { /* defaults */ }
+}
+
+function saveBubbleMode() {
+  try {
+    fs.writeFileSync(uiStorePath(), JSON.stringify({ bubbleMode, hotkey: summonHotkey || savedHotkey }));
+  } catch { /* ignore */ }
+}
+
+function bubbleGeometry() {
+  const { workArea } = screen.getPrimaryDisplay();
+  if (bubbleMode.layout === 'meeting') {
+    const width = Math.round(workArea.width * 0.5);
+    const height = Math.round(workArea.height - 48);
+    return {
+      width,
+      height,
+      x: Math.round(workArea.x + (workArea.width - width) / 2),
+      y: Math.round(workArea.y + 24),
+    };
+  }
+  const shape = BUBBLE_WIDTH[bubbleMode.shape] ? bubbleMode.shape : 'wide';
+  const width = BUBBLE_WIDTH[shape];
+  const height = Math.round(width * BUBBLE_RATIO[shape]) + BUBBLE_CAPS;
+  return {
+    width,
+    height,
+    x: Math.round(workArea.x + workArea.width - width - 20),
+    y: Math.round(workArea.y + workArea.height - height - 20),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Where is the Python project?
@@ -317,16 +366,26 @@ function createWindow(port) {
  * Bottom-of-screen status pill: ● recording, ■ stop, ✕ cancel, ✓ done.
  * Frameless, always on top, and non-focusable so it never steals typing focus.
  */
-function createHud() {
+function hudGeometry(tall) {
   const { workArea } = screen.getPrimaryDisplay();
-  const width = 320;
-  const height = 56;
-
-  hud = new BrowserWindow({
+  const width = tall ? 480 : 340;
+  const height = tall ? 168 : 56;
+  return {
     width,
     height,
     x: Math.round(workArea.x + (workArea.width - width) / 2),
     y: Math.round(workArea.y + workArea.height - height - 16),
+  };
+}
+
+function createHud() {
+  const g = hudGeometry(false);
+
+  hud = new BrowserWindow({
+    width: g.width,
+    height: g.height,
+    x: g.x,
+    y: g.y,
     frame: false,
     transparent: true,
     resizable: false,
@@ -347,9 +406,11 @@ function createHud() {
   });
 
   hud.loadFile(path.join(__dirname, 'hud.html'));
-  hud.setAlwaysOnTop(true, 'screen-saver');
+  // One notch above 'screen-saver' so the bar floats over other always-on-top
+  // windows (e.g. a pinned workbench app).
+  hud.setAlwaysOnTop(true, 'screen-saver', 1);
   hud.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  hud.setAlwaysOnTop(true, 'screen-saver');
+  hud.setAlwaysOnTop(true, 'screen-saver', 1);
   hud.on('closed', () => { hud = null; });
 }
 
@@ -358,15 +419,13 @@ function createHud() {
  * with the HUD while recording, hidden the moment the take ends.
  */
 function createBubble() {
-  const { workArea } = screen.getPrimaryDisplay();
-  const width = 244;
-  const height = 300;
+  const g = bubbleGeometry();
 
   bubble = new BrowserWindow({
-    width,
-    height,
-    x: Math.round(workArea.x + workArea.width - width - 20),
-    y: Math.round(workArea.y + workArea.height - height - 20),
+    width: g.width,
+    height: g.height,
+    x: g.x,
+    y: g.y,
     frame: false,
     transparent: true,
     resizable: false,
@@ -387,19 +446,38 @@ function createBubble() {
   });
 
   bubble.loadFile(path.join(__dirname, 'bubble.html'));
-  bubble.setAlwaysOnTop(true, 'screen-saver');
+  bubble.setAlwaysOnTop(true, 'screen-saver', 1);
   bubble.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  bubble.setAlwaysOnTop(true, 'screen-saver');
+  bubble.setAlwaysOnTop(true, 'screen-saver', 1);
   bubble.on('closed', () => { bubble = null; bubbleVisible = false; });
+  bubble.webContents.on('did-finish-load', () => {
+    bubble.webContents.send('bubble:mode', bubbleMode);
+    raiseBubble();
+  });
+}
+
+/** Re-assert the top-most level (over other always-on-top windows). */
+function raiseBubble() {
+  if (!bubble || bubble.isDestroyed()) return;
+  bubble.setAlwaysOnTop(true, 'screen-saver', 1);
+  if (bubbleVisible) bubble.showInactive();
+}
+
+function applyBubbleMode() {
+  if (!bubble || bubble.isDestroyed()) return;
+  const g = bubbleGeometry();
+  bubble.setBounds({ x: g.x, y: g.y, width: g.width, height: g.height });
+  bubble.webContents.send('bubble:mode', bubbleMode);
+  raiseBubble();
 }
 
 function showBubble() {
   if (!bubble) createBubble();
+  bubble.webContents.send('bubble:mode', bubbleMode);
   bubble.webContents.send('bubble:state', { state: 'start', port: serverPort });
-  if (!bubbleVisible) {
-    bubble.showInactive();
-    bubbleVisible = true;
-  }
+  bubble.showInactive();
+  bubbleVisible = true;
+  raiseBubble();
 }
 
 function hideBubble() {
@@ -415,11 +493,14 @@ function updateHud(payload) {
   clearTimeout(hudHideTimer);
   const state = typeof payload === 'string' ? payload : (payload && payload.state) || 'idle';
   if (!hud) createHud();
-  // The moment recording stops, seed the clipboard with the live transcript so
-  // the user can paste immediately (before the AI polish lands).
+  // The moment recording stops: put the live transcript in the clipboard AND
+  // drop it straight into the focused app, so words appear as fast as possible.
   if (state === 'processing' && liveTranscript.trim()) {
     clipboard.writeText(liveTranscript.trim());
+    pasteClipboard();
   }
+  // The done/error card is taller so the refined text is readable.
+  hud.setBounds(hudGeometry(state === 'done' || state === 'error'));
   hud.webContents.send('hud:state', payload);
   if (state !== lastHudState) {
     lastHudState = state;
@@ -440,7 +521,7 @@ function updateHud(payload) {
   }
   hud.showInactive();
   if (state === 'done' || state === 'error') {
-    hudHideTimer = setTimeout(() => { if (hud) hud.hide(); }, 3500);
+    hudHideTimer = setTimeout(() => { if (hud) hud.hide(); }, 9000);
   }
 }
 
@@ -546,10 +627,16 @@ function onSummonHotkey() {
   }
 }
 
-function registerSummonHotkey() {
-  for (const combo of [SUMMON_HOTKEY, ...SUMMON_FALLBACKS]) {
+function registerSummonHotkey(preferred) {
+  const wanted = preferred || savedHotkey || SUMMON_HOTKEY;
+  globalShortcut.unregisterAll();
+  const candidates = [wanted, ...SUMMON_FALLBACKS.filter((c) => c !== wanted)];
+  for (const combo of candidates) {
     if (globalShortcut.register(combo, onSummonHotkey)) {
       summonHotkey = combo;
+      savedHotkey = combo;
+      saveBubbleMode();
+      rebuildTray();
       console.log(`[chaplin] summon + record hotkey: ${combo}`);
       return combo;
     }
@@ -700,6 +787,7 @@ app.whenReady().then(() => {
   // Static assets change whenever the app is rebuilt; never trust the disk cache.
   session.defaultSession.clearCache().catch(() => {});
 
+  loadBubbleMode();
   createHud();
   createBubble();
   createTray();
@@ -724,8 +812,38 @@ app.whenReady().then(() => {
     liveTranscript = typeof text === 'string' ? text : '';
   });
 
+  // Let the app page hand the live transcript to the server for the refine.
+  ipcMain.handle('shell:get-live-transcript', () => liveTranscript);
+
   // Paste the finished text into whatever app the user is typing in.
   ipcMain.on('shell:paste', () => pasteClipboard());
+
+  // Camera-bubble appearance chosen in the app UI.
+  ipcMain.handle('shell:get-bubble-mode', () => bubbleMode);
+  ipcMain.on('shell:bubble-mode', (_event, mode) => {
+    if (!mode) return;
+    bubbleMode = {
+      layout: mode.layout || bubbleMode.layout,
+      shape: mode.shape || bubbleMode.shape,
+    };
+    saveBubbleMode();
+    applyBubbleMode();
+  });
+
+  // User-configurable summon shortcut.
+  ipcMain.handle('shell:get-hotkey', () => ({ hotkey: summonHotkey, display: hotkeyDisplay() }));
+  ipcMain.handle('shell:set-hotkey', (_event, accel) => {
+    if (typeof accel !== 'string' || !accel.trim()) {
+      return { ok: false, hotkey: summonHotkey, display: hotkeyDisplay() };
+    }
+    const prev = summonHotkey;
+    const got = registerSummonHotkey(accel.trim());
+    if (!got) {
+      if (prev) registerSummonHotkey(prev);
+      return { ok: false, hotkey: summonHotkey, display: hotkeyDisplay() };
+    }
+    return { ok: true, hotkey: got, display: hotkeyDisplay() };
+  });
 
   // Renderer reports take state so the HUD can mirror it.
   ipcMain.on('shell:hud-state', (_event, payload) => updateHud(payload));

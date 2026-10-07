@@ -54,8 +54,13 @@ $("startCamera").onclick = async () => {
   }
 };
 
+let starting = false;   // camera/mic still warming up
+let takeEnded = false;  // user ended the take while it was still starting
+
 async function startRecording() {
-  if (recorder && recorder.state === "recording") return;
+  if (starting || takeRunning()) return;
+  starting = true;
+  takeEnded = false;
   // Recording needs the camera/mic stream; acquire it on demand instead of
   // forcing the user to find "Start Camera" first.
   if (!stream || !stream.active) {
@@ -63,8 +68,15 @@ async function startRecording() {
       await ensureStream();
     } catch (e) {
       $("status").textContent = `Camera error: ${e.message}`;
+      starting = false;
       return;
     }
+  }
+  // The take may have been cancelled while the camera was opening.
+  if (takeEnded) {
+    starting = false;
+    releaseCamera();
+    return;
   }
   chunks = [];
   $("status").textContent = "Recording…";
@@ -88,6 +100,7 @@ async function startRecording() {
     setTimeout(upload, 60);
   };
   recorder.start(250);
+  starting = false;
   hudState('recording');
 }
 
@@ -148,9 +161,17 @@ function resumeTake() {
 
 // Stop + transcribe + get out of the way (hotkey 2nd press or HUD ■).
 function endTake() {
-  if (!takeRunning()) return;
-  stopRecording();
-  hudState('processing');
+  takeEnded = true;
+  if (takeRunning()) {
+    stopRecording();
+    hudState('processing');
+  } else if (starting) {
+    // Cancelled while the camera was still warming up; startRecording() will
+    // notice `takeEnded` and release the stream it just acquired.
+    hudState('idle');
+  } else {
+    releaseCamera();
+  }
   minimizeShell();
 }
 
@@ -212,14 +233,14 @@ function handleEvent(ev) {
     setTime("refTime", ev.stage_ms);
     lastRefined = ev.text || "";
     if (lastRefined) {
+      // Refined text only lands on the clipboard (no auto-paste): the live
+      // transcript was already pasted, so a manual paste upgrades the text.
       copyText(lastRefined).then(() => {
         $("copied").textContent = "refined copied ✓";
         setTimeout(() => { if ($("copied").textContent === "refined copied ✓") $("copied").textContent = ""; }, 2500);
-        // Paste the finished text into whatever app the user is typing in.
-        if (window.chaplinShell && window.chaplinShell.paste) window.chaplinShell.paste();
       }).catch(() => {});
       playTTS(lastRefined);
-      hudState('done');
+      hudState('done', { text: lastRefined });
     }
   } else if (ev.type === "done") {
     $("status").textContent = "Done";
@@ -253,6 +274,14 @@ async function upload() {
   form.append("target_lang", $("targetLang").value);
   form.append("source_lang", $("sourceLang").value);
   form.append("lipread", $("lipread").checked ? "on" : "off");
+  // Hand the already-streamed Doubao transcript to the server so it can skip
+  // the second ASR pass and refine straight away.
+  if (window.chaplinShell && window.chaplinShell.getLiveTranscript) {
+    try {
+      const live = await window.chaplinShell.getLiveTranscript();
+      if (live) form.append("live_text", live);
+    } catch (_) { /* ignore */ }
+  }
   resetResults();
   $("status").textContent = "Processing…";
   let resp;
@@ -294,10 +323,79 @@ async function playTTS(text) {
 
 $("play").onclick = () => { if (lastRefined) playTTS(lastRefined); };
 
+// Custom summon shortcut recorder (Electron shell only).
+(function initHotkeyRecorder() {
+  const input = $("hotkeyInput");
+  const status = $("hotkeyStatus");
+  if (!input || !status || !window.chaplinShell || !window.chaplinShell.setHotkey) return;
+  const MODS = ["Control", "Alt", "Shift", "Meta"];
+
+  window.chaplinShell.getHotkey()
+    .then((h) => { if (h) input.value = h.display || h.hotkey; })
+    .catch(() => {});
+
+  input.addEventListener("keydown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (MODS.includes(e.key)) return;
+    const parts = [];
+    if (e.metaKey) parts.push("Command");
+    if (e.ctrlKey) parts.push("Control");
+    if (e.altKey) parts.push("Alt");
+    if (e.shiftKey) parts.push("Shift");
+    let key = e.key;
+    if (key === " ") key = "Space";
+    else if (key.length === 1) key = key.toUpperCase();
+    parts.push(key);
+    input.value = parts.join("+");
+    input.dataset.accel = parts.join("+");
+    const hasMod = e.metaKey || e.ctrlKey || e.altKey;
+    status.textContent = hasMod ? "Click away (or press Tab) to save." : "Add ⌃ / ⌥ / ⌘ as well.";
+  });
+
+  input.addEventListener("blur", async () => {
+    const accel = input.dataset.accel;
+    if (!accel) return;
+    input.dataset.accel = "";
+    if (!/(Control|Alt|Command)\+/.test(accel)) {
+      status.textContent = "Use ⌃ / ⌥ / ⌘ + a key.";
+      return;
+    }
+    try {
+      const res = await window.chaplinShell.setHotkey(accel);
+      if (res && res.ok) {
+        input.value = res.display || accel;
+        status.textContent = `Saved: ${res.display || accel}`;
+      } else {
+        status.textContent = "That combo is taken — try another.";
+      }
+    } catch (_) {
+      status.textContent = "Could not set that shortcut.";
+    }
+  });
+})();
+
+// Camera pop-up layout/shape (Electron shell only).
+(async function initBubbleControls() {
+  const layout = $("bubbleLayout");
+  const shape = $("bubbleShape");
+  if (!layout || !shape || !window.chaplinShell || !window.chaplinShell.setBubbleMode) return;
+  try {
+    const mode = await window.chaplinShell.getBubbleMode();
+    if (mode) {
+      if (mode.layout) layout.value = mode.layout;
+      if (mode.shape) shape.value = mode.shape;
+    }
+  } catch (_) { /* keep defaults */ }
+  const push = () => window.chaplinShell.setBubbleMode({ layout: layout.value, shape: shape.value });
+  layout.onchange = push;
+  shape.onchange = push;
+})();
+
 // Electron shell: one press starts a take, the next stops it + minimizes.
 if (window.chaplinShell && window.chaplinShell.onToggleRecord) {
   window.chaplinShell.onToggleRecord(() => {
-    if (takeRunning()) endTake();
+    if (takeRunning() || starting) endTake();
     else startRecording();
   });
 }

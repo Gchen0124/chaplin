@@ -6,7 +6,7 @@
  * /ws/asr (Doubao) and shows the recognised text under the self-view.
  *
  * Lifecycle is driven by main: `bubble:state` with {state:"start", port} or
- * {state:"stop"}.
+ * {state:"stop"}. `bubble:mode` sets the layout/shape classes.
  */
 
 const camEl = document.getElementById('cam');
@@ -14,13 +14,13 @@ const prevEl = document.getElementById('prev');
 const nowEl = document.getElementById('now');
 const clockEl = document.getElementById('clock');
 
-let stream = null;
+let micStream = null;
+let camStream = null;
 let audioCtx = null;
 let processor = null;
 let source = null;
 let ws = null;
 let running = false;
-let committed = '';
 let tick = null;
 let startedAt = 0;
 
@@ -39,8 +39,7 @@ function floatToPcm16(f32) {
 }
 
 function connect(port) {
-  const wsUrl = `ws://127.0.0.1:${port}/ws/asr`;
-  ws = new WebSocket(wsUrl);
+  ws = new WebSocket(`ws://127.0.0.1:${port}/ws/asr`);
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => ws.send(JSON.stringify({ type: 'start' }));
   ws.onmessage = (e) => {
@@ -48,16 +47,14 @@ function connect(port) {
     try { msg = JSON.parse(e.data); } catch { return; }
     if (msg.type === 'asr') {
       const text = (msg.text || '').trim();
-      if (msg.definite) {
-        committed = text || committed;
-        prevEl.textContent = committed;
-        nowEl.textContent = '';
-      } else {
-        nowEl.textContent = text;
-      }
-      // Hand the best-known live text to main so a stop can copy it at once.
+      if (!text) return;
+      // `text` is the whole-session transcript: last sentence big, rest dim.
+      const parts = text.split(/(?<=[.!?。！？])\s*/);
+      const last = parts.length > 1 ? parts.pop() : '';
+      prevEl.textContent = parts.join(' ');
+      nowEl.textContent = last || text;
       if (window.chaplinShell && window.chaplinShell.transcript) {
-        window.chaplinShell.transcript([committed, text].filter(Boolean).join(' ').trim());
+        window.chaplinShell.transcript(text);
       }
     } else if (msg.type === 'error') {
       nowEl.textContent = `⚠︎ ${msg.detail}`;
@@ -69,39 +66,56 @@ function connect(port) {
 async function start(port) {
   if (running) return;
   running = true;
-  committed = '';
   prevEl.textContent = '';
   nowEl.textContent = 'Listening…';
   startedAt = Date.now();
   setClock();
   tick = setInterval(setClock, 500);
 
+  // Kick off the ASR handshake immediately; the mic joins a moment later.
   connect(port);
 
+  let mic = null;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: 640, height: 480, frameRate: 24 },
+    mic = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
   } catch (err) {
-    nowEl.textContent = `⚠︎ camera/mic: ${err.message}`;
+    nowEl.textContent = `⚠︎ mic: ${err.message}`;
     return;
   }
-  camEl.srcObject = stream;
+  if (!running) { mic.getTracks().forEach((t) => t.stop()); return; }
+  micStream = mic;
 
   audioCtx = new AudioContext({ sampleRate: 16000 });
-  source = audioCtx.createMediaStreamSource(stream);
+  source = audioCtx.createMediaStreamSource(micStream);
   processor = audioCtx.createScriptProcessor(2048, 1, 1);
   processor.onaudioprocess = (event) => {
     if (!running || !ws || ws.readyState !== WebSocket.OPEN) return;
-    const pcm = floatToPcm16(event.inputBuffer.getChannelData(0));
-    ws.send(pcm.buffer);
+    ws.send(floatToPcm16(event.inputBuffer.getChannelData(0)).buffer);
   };
   source.connect(processor);
   const mute = audioCtx.createGain();
   mute.gain.value = 0;
   processor.connect(mute);
   mute.connect(audioCtx.destination);
+
+  // Camera for the self-view (slower to warm up; lags behind the captions).
+  let cam = null;
+  try {
+    cam = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480, frameRate: 24 },
+    });
+  } catch (_err) {
+    cam = null;
+  }
+  // If the take ended while the camera was still opening, drop it immediately
+  // so the recording light goes out.
+  if (!running) { if (cam) cam.getTracks().forEach((t) => t.stop()); return; }
+  camStream = cam;
+  camEl.srcObject = cam
+    ? new MediaStream([...cam.getVideoTracks(), ...micStream.getAudioTracks()])
+    : micStream;
 }
 
 function stop() {
@@ -112,9 +126,23 @@ function stop() {
   if (source) { try { source.disconnect(); } catch { /* ignore */ } }
   if (audioCtx) { try { audioCtx.close(); } catch { /* ignore */ } }
   processor = null; source = null; audioCtx = null;
-  if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+  [micStream, camStream].forEach((s) => {
+    if (s) { try { s.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ } }
+  });
+  micStream = null; camStream = null;
   camEl.srcObject = null;
   if (ws) { try { ws.send(JSON.stringify({ type: 'stop' })); ws.close(); } catch { /* ignore */ } ws = null; }
+}
+
+const root = document.querySelector('.bubble');
+
+function applyMode(mode) {
+  if (!mode) return;
+  root.className = `bubble layout-${mode.layout || 'corner'} shape-${mode.shape || 'wide'}`;
+}
+
+if (window.chaplinShell && window.chaplinShell.onBubbleMode) {
+  window.chaplinShell.onBubbleMode(applyMode);
 }
 
 if (window.chaplinShell && window.chaplinShell.onBubble) {

@@ -106,6 +106,7 @@ class DoubaoSession:
         self._recv_task: asyncio.Task | None = None
         self._seq = 2
         self._closed = False
+        self._utts: dict[int, str] = {}   # start_time -> latest text
 
     async def connect(self) -> None:
         try:
@@ -136,15 +137,29 @@ class DoubaoSession:
                         self.on_error(str(parsed.get("msg") or "doubao error"))
                     continue
                 result = parsed.get("result") or parsed
-                text = (result or {}).get("text") or ""
-                definite = False
-                utterances = (result or {}).get("utterances") or []
-                if utterances:
-                    last = utterances[-1] or {}
-                    definite = bool(last.get("definite"))
-                    if not text:
-                        text = last.get("text") or ""
-                if text.strip():
+                if not isinstance(result, dict):
+                    continue
+                # Doubao's `result.text` is a rolling window that drops older
+                # sentences. Its `utterances` list is keyed by start_time, so
+                # keep the latest text per utterance and rejoin in order to get
+                # the whole-session transcript.
+                utterances = result.get("utterances") or []
+                for utt in utterances:
+                    if not isinstance(utt, dict):
+                        continue
+                    start = utt.get("start_time")
+                    piece = (utt.get("text") or "").strip()
+                    if start is None:
+                        start = len(self._utts)
+                    if piece:
+                        self._utts[start] = piece
+                if self._utts:
+                    text = " ".join(self._utts[k] for k in sorted(self._utts)).strip()
+                else:
+                    text = (result.get("text") or "").strip()
+                definite = bool(utterances) and all(
+                    isinstance(u, dict) and u.get("definite") for u in utterances)
+                if text:
                     res = self.on_text(text, definite)
                     if asyncio.iscoroutine(res):
                         await res

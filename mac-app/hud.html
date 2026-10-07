@@ -90,6 +90,14 @@
       transform: rotate(45deg);
     }
     .msg { font-size: 13px; max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .donewrap { display: flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 400px; }
+    .doneText {
+      font-size: 14px; line-height: 1.4; color: #fff; font-weight: 500;
+      display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
+      overflow: hidden; word-break: break-word;
+    }
+    body.tall .pill { height: 100%; border-radius: 16px; align-items: flex-start; padding: 14px 16px; }
+    body.tall .view { width: 100%; align-items: flex-start; }
   </style>
 </head>
 <body>
@@ -111,7 +119,10 @@
 
     <div class="view" id="done">
       <button class="btn ok" id="confirm" title="Confirm"><span class="check"></span></button>
-      <span class="label" id="doneLabel">Copied to clipboard</span>
+      <div class="donewrap">
+        <div class="label" id="doneLabel">Refined · on clipboard (⌘V)</div>
+        <div class="doneText" id="doneText"></div>
+      </div>
     </div>
 
     <div class="view" id="error">
