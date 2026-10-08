@@ -23,6 +23,19 @@ let ws = null;
 let running = false;
 let tick = null;
 let startedAt = 0;
+let rules = [];   // [{from, to}] custom dictionary from the app
+
+function applyRules(text) {
+  let out = text;
+  for (const r of rules) {
+    if (!r || !r.from) continue;
+    const esc = String(r.from).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    try {
+      out = out.replace(new RegExp(esc, 'gi'), r.to == null ? '' : String(r.to));
+    } catch (_e) { /* skip bad pattern */ }
+  }
+  return out;
+}
 
 function setClock() {
   const s = Math.floor((Date.now() - startedAt) / 1000);
@@ -46,7 +59,7 @@ function connect(port) {
     let msg;
     try { msg = JSON.parse(e.data); } catch { return; }
     if (msg.type === 'asr') {
-      const text = (msg.text || '').trim();
+      const text = applyRules((msg.text || '').trim());
       if (!text) return;
       // `text` is the whole-session transcript: last sentence big, rest dim.
       const parts = text.split(/(?<=[.!?。！？])\s*/);
@@ -143,6 +156,10 @@ function applyMode(mode) {
 
 if (window.chaplinShell && window.chaplinShell.onBubbleMode) {
   window.chaplinShell.onBubbleMode(applyMode);
+}
+
+if (window.chaplinShell && window.chaplinShell.onRules) {
+  window.chaplinShell.onRules((list) => { rules = Array.isArray(list) ? list : []; });
 }
 
 if (window.chaplinShell && window.chaplinShell.onBubble) {

@@ -68,6 +68,14 @@
           <option value="circle">Circle</option>
         </select>
       </label>
+      <h4 style="margin:6px 0;">Replacements</h4>
+      <div id="replRows"></div>
+      <div style="display:flex;gap:6px;margin-top:6px;">
+        <input id="replFrom" placeholder="heard" style="flex:1;" />
+        <input id="replTo" placeholder="replace with" style="flex:1;" />
+        <button id="replAdd" class="secondary" style="padding:4px 10px;">Add</button>
+      </div>
+      <div class="status" id="replStatus">If the transcript says the left, swap in the right.</div>
       <h4 style="margin:6px 0;">Your recording</h4>
       <video id="myRecording" controls playsinline style="width:100%;display:none;border-radius:6px;"></video>
       <div class="status" id="noRecording">Record once to play it back here.</div>

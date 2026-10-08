@@ -323,6 +323,51 @@ async function playTTS(text) {
 
 $("play").onclick = () => { if (lastRefined) playTTS(lastRefined); };
 
+// Custom replacements dictionary (Electron shell only): fix mis-recognitions
+// or turn a spoken keyword into a saved field.
+(async function initReplacements() {
+  const rows = $("replRows");
+  const fromEl = $("replFrom");
+  const toEl = $("replTo");
+  const addEl = $("replAdd");
+  if (!rows || !addEl || !window.chaplinShell || !window.chaplinShell.setReplacements) return;
+
+  let list = [];
+  try { list = (await window.chaplinShell.getReplacements()) || []; } catch (_) { list = []; }
+
+  const save = () => window.chaplinShell.setReplacements(list);
+
+  function render() {
+    rows.innerHTML = "";
+    list.forEach((r, i) => {
+      const row = document.createElement("div");
+      row.className = "key-row";
+      const label = document.createElement("span");
+      label.textContent = `${r.from}  →  ${r.to || "(remove)"}`;
+      const del = document.createElement("button");
+      del.className = "secondary";
+      del.textContent = "✕";
+      del.style.padding = "2px 8px";
+      del.onclick = () => { list.splice(i, 1); save(); render(); };
+      row.appendChild(label);
+      row.appendChild(del);
+      rows.appendChild(row);
+    });
+  }
+
+  addEl.onclick = () => {
+    const f = fromEl.value.trim();
+    if (!f) return;
+    list.push({ from: f, to: toEl.value });
+    fromEl.value = "";
+    toEl.value = "";
+    save();
+    render();
+  };
+
+  render();
+})();
+
 // Custom summon shortcut recorder (Electron shell only).
 (function initHotkeyRecorder() {
   const input = $("hotkeyInput");

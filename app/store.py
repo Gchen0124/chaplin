@@ -58,6 +58,8 @@ class Store:
                     screen_path TEXT NOT NULL,
                     audio_path TEXT,
                     export_path TEXT,
+                    cam_path TEXT,
+                    original_path TEXT,
                     status TEXT NOT NULL,
                     error TEXT,
                     warning TEXT
@@ -75,6 +77,15 @@ class Store:
                 );
                 """
             )
+        self._ensure_demo_columns()
+
+    def _ensure_demo_columns(self) -> None:
+        with self._conn() as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(demos)")}
+            if "cam_path" not in cols:
+                conn.execute("ALTER TABLE demos ADD COLUMN cam_path TEXT")
+            if "original_path" not in cols:
+                conn.execute("ALTER TABLE demos ADD COLUMN original_path TEXT")
 
     def save_session(self, *, source_lang, target_lang, original_text, refined_text,
                      vsr_raw_text, video_path, audio_path, duration_s, confidence,
@@ -103,6 +114,13 @@ class Store:
                 (limit,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_session(self, session_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        return dict(row) if row else None
 
     def save_vocab(self, session_id: str, highlights: list[VocabHighlight],
                    source_lang: str) -> None:
@@ -144,16 +162,17 @@ class Store:
         return d
 
     def create_demo(self, *, source_lang, target_lang, duration_s, screen_path,
-                    audio_path=None, status="saved", error=None, warning=None,
-                    demo_id=None) -> str:
+                    audio_path=None, cam_path=None, status="saved", error=None,
+                    warning=None, demo_id=None) -> str:
         did = demo_id or uuid.uuid4().hex
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO demos (id, created_at, source_lang, target_lang,
-                   duration_s, screen_path, audio_path, export_path, status, error, warning)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                   duration_s, screen_path, audio_path, export_path, cam_path,
+                   original_path, status, error, warning)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (did, _now(), source_lang, target_lang, duration_s, screen_path,
-                 audio_path, None, status, error, warning),
+                 audio_path, None, cam_path, None, status, error, warning),
             )
         return did
 
@@ -172,7 +191,8 @@ class Store:
 
     def update_demo(self, demo_id: str, **fields) -> None:
         allowed = {"source_lang", "target_lang", "duration_s", "screen_path",
-                   "audio_path", "export_path", "status", "error", "warning"}
+                   "audio_path", "export_path", "cam_path", "original_path",
+                   "status", "error", "warning"}
         sets, vals = [], []
         for k, v in fields.items():
             if k in allowed:

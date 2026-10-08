@@ -36,10 +36,14 @@ let hud = null;
 let hudHideTimer = null;
 let bubble = null;
 let bubbleVisible = false;
+let resultWin = null;
 let tray = null;
 let lastHudState = 'idle';
 let liveTranscript = '';   // latest Doubao live transcript from the bubble
 let autoPaste = true;      // paste the finished text into the focused app
+// Custom dictionary applied to the live transcript: [{from, to}]. Fixes the
+// odd mis-recognition and lets a spoken keyword stand in for a saved field.
+let replacements = [];
 
 // Camera bubble appearance. Layout: corner | meeting. Shape (corner only):
 // wide (4:3) | square | portrait (9:16) | circle.
@@ -57,13 +61,23 @@ function loadBubbleMode() {
     const raw = JSON.parse(fs.readFileSync(uiStorePath(), 'utf8'));
     if (raw && raw.bubbleMode) bubbleMode = { ...bubbleMode, ...raw.bubbleMode };
     if (raw && typeof raw.hotkey === 'string' && raw.hotkey) savedHotkey = raw.hotkey;
+    if (raw && Array.isArray(raw.replacements)) replacements = raw.replacements;
   } catch { /* defaults */ }
 }
 
 function saveBubbleMode() {
   try {
-    fs.writeFileSync(uiStorePath(), JSON.stringify({ bubbleMode, hotkey: summonHotkey || savedHotkey }));
+    fs.writeFileSync(uiStorePath(), JSON.stringify({
+      bubbleMode,
+      hotkey: summonHotkey || savedHotkey,
+      replacements,
+    }));
   } catch { /* ignore */ }
+}
+
+/** Push the current dictionary to the bubble so it can rewrite captions. */
+function sendRules() {
+  if (bubble && !bubble.isDestroyed()) bubble.webContents.send('bubble:rules', replacements);
 }
 
 function bubbleGeometry() {
@@ -452,6 +466,7 @@ function createBubble() {
   bubble.on('closed', () => { bubble = null; bubbleVisible = false; });
   bubble.webContents.on('did-finish-load', () => {
     bubble.webContents.send('bubble:mode', bubbleMode);
+    sendRules();
     raiseBubble();
   });
 }
@@ -489,6 +504,53 @@ function hideBubble() {
   }
 }
 
+/**
+ * Editable refined-text card. Stays until closed; the text is already on the
+ * clipboard, and Copy puts an edited version back.
+ */
+function createResult() {
+  const { workArea } = screen.getPrimaryDisplay();
+  const width = 560;
+  const height = 190;
+  resultWin = new BrowserWindow({
+    width,
+    height,
+    x: Math.round(workArea.x + (workArea.width - width) / 2),
+    y: Math.round(workArea.y + workArea.height - height - 96),
+    frame: false,
+    transparent: true,
+    resizable: true,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    show: false,
+    hasShadow: false,
+    focusable: true,
+    acceptFirstMouse: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  resultWin.loadFile(path.join(__dirname, 'result.html'));
+  resultWin.setAlwaysOnTop(true, 'screen-saver', 2);
+  resultWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  resultWin.on('closed', () => { resultWin = null; });
+}
+
+function showResult(text) {
+  if (!resultWin) createResult();
+  resultWin.webContents.send('result:show', { text: text || '' });
+  resultWin.showInactive();
+}
+
+function hideResult() {
+  if (resultWin && !resultWin.isDestroyed()) resultWin.hide();
+}
+
 function updateHud(payload) {
   clearTimeout(hudHideTimer);
   const state = typeof payload === 'string' ? payload : (payload && payload.state) || 'idle';
@@ -499,8 +561,8 @@ function updateHud(payload) {
     clipboard.writeText(liveTranscript.trim());
     pasteClipboard();
   }
-  // The done/error card is taller so the refined text is readable.
-  hud.setBounds(hudGeometry(state === 'done' || state === 'error'));
+  // Errors get the taller card; the refined text lives in its own editable card.
+  hud.setBounds(hudGeometry(state === 'error'));
   hud.webContents.send('hud:state', payload);
   if (state !== lastHudState) {
     lastHudState = state;
@@ -514,6 +576,10 @@ function updateHud(payload) {
   // Camera bubble follows the take (stays up while paused).
   if (state === 'recording' || state === 'paused') showBubble();
   else hideBubble();
+
+  // Editable refined card: appears when the AI lands, dismissed by user or a new take.
+  if (state === 'done' && payload && payload.text) showResult(payload.text);
+  else if (state === 'recording' || state === 'idle') hideResult();
 
   if (state === 'idle') {
     hud.hide();
@@ -790,6 +856,7 @@ app.whenReady().then(() => {
   loadBubbleMode();
   createHud();
   createBubble();
+  createResult();
   createTray();
 
   // Renderer asks us to get out of the way after it stops a take.
@@ -806,6 +873,13 @@ app.whenReady().then(() => {
     clipboard.writeText(String(text == null ? '' : text));
     return true;
   });
+
+  // Refined card: re-copy edited text / close.
+  ipcMain.handle('result:copy', (_event, text) => {
+    clipboard.writeText(String(text == null ? '' : text));
+    return true;
+  });
+  ipcMain.on('result:close', () => hideResult());
 
   // Latest Doubao live transcript, kept so a stop can seed the clipboard with it.
   ipcMain.on('bubble:transcript', (_event, text) => {
@@ -843,6 +917,18 @@ app.whenReady().then(() => {
       return { ok: false, hotkey: summonHotkey, display: hotkeyDisplay() };
     }
     return { ok: true, hotkey: got, display: hotkeyDisplay() };
+  });
+
+  // Custom replacements: rewrite "heard" text in the live transcript.
+  ipcMain.handle('shell:get-replacements', () => replacements);
+  ipcMain.on('shell:set-replacements', (_event, list) => {
+    replacements = Array.isArray(list)
+      ? list
+          .filter((r) => r && String(r.from || '').trim())
+          .map((r) => ({ from: String(r.from).trim(), to: String(r.to == null ? '' : r.to) }))
+      : [];
+    saveBubbleMode();
+    sendRules();
   });
 
   // Renderer reports take state so the HUD can mirror it.

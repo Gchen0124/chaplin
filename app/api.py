@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import subprocess
 import time
 import uuid
 
@@ -349,6 +350,31 @@ def create_app(*, settings: Settings, store: Store, keys: KeyStore, vsr,
     @app.get("/api/v1/sessions")
     def list_sessions(limit: int = 50):
         return store.list_sessions(limit=limit)
+
+    @app.get("/api/v1/sessions/{sid}/video")
+    def session_video(sid: str):
+        row = store.get_session(sid)
+        if not row or not row.get("video_path") or not os.path.isfile(row["video_path"]):
+            raise HTTPException(404, "Recording not found.")
+        return FileResponse(row["video_path"], media_type="video/webm")
+
+    @app.get("/api/v1/sessions/{sid}/thumb")
+    def session_thumb(sid: str):
+        """First-frame still used as the History card thumbnail (cached)."""
+        row = store.get_session(sid)
+        if not row or not row.get("video_path") or not os.path.isfile(row["video_path"]):
+            raise HTTPException(404, "Recording not found.")
+        src = row["video_path"]
+        thumb = os.path.join(os.path.dirname(src), "thumb.jpg")
+        if not os.path.isfile(thumb):
+            subprocess.run(
+                ["ffmpeg", "-y", "-ss", "0", "-i", src, "-frames:v", "1",
+                 "-vf", "scale=480:-1", thumb],
+                capture_output=True, text=True,
+            )
+        if not os.path.isfile(thumb):
+            raise HTTPException(404, "No thumbnail.")
+        return FileResponse(thumb, media_type="image/jpeg")
 
     @app.get("/api/v1/vocab", response_model=list[VocabItem])
     def list_vocab(starred: bool | None = None, q: str | None = None):

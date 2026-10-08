@@ -34,10 +34,38 @@ async function loadHistory() {
   items.forEach(s => {
     const row = document.createElement("div");
     row.className = "card"; row.style.marginBottom = "10px";
-    row.innerHTML = `<div class="line"><div class="tag">${s.created_at} · ${s.source_lang}→${s.target_lang} · ${s.input_source}</div>
-      <div class="text">${s.original_text}</div>
-      <div class="text" style="color:#b9f3d0;">${s.refined_text}</div>
-      <div class="status">lip: ${s.vsr_raw_text || "—"}</div></div>`;
+    row.innerHTML = `<div class="tag">${s.created_at} · ${s.source_lang}→${s.target_lang} · ${s.input_source}</div>`;
+
+    const wrap = document.createElement("div");
+    wrap.style.display = "flex"; wrap.style.gap = "12px"; wrap.style.marginTop = "8px"; wrap.style.alignItems = "flex-start";
+
+    // First-frame thumbnail; click to play the take (video never leaves the Mac).
+    const media = document.createElement("div");
+    media.style.flex = "0 0 auto";
+    const img = document.createElement("img");
+    img.src = `/api/v1/sessions/${s.id}/thumb`;
+    img.alt = "recording";
+    img.style.cssText = "width:168px;border-radius:8px;cursor:pointer;display:block;background:#0b0d12;";
+    img.onerror = () => { img.style.display = "none"; };
+    img.onclick = () => {
+      const v = document.createElement("video");
+      v.src = `/api/v1/sessions/${s.id}/video`;
+      v.controls = true; v.autoplay = true; v.playsInline = true;
+      v.style.cssText = "width:280px;border-radius:8px;display:block;";
+      media.replaceChild(v, img);
+      v.play().catch(() => {});
+    };
+    media.appendChild(img);
+
+    const text = document.createElement("div");
+    text.style.flex = "1"; text.style.minWidth = "0";
+    text.innerHTML = `<div class="text">${s.original_text || ""}</div>
+      <div class="text" style="color:#b9f3d0;">${s.refined_text || ""}</div>
+      <div class="status">lip: ${s.vsr_raw_text || "—"}</div>`;
+
+    wrap.appendChild(media);
+    wrap.appendChild(text);
+    row.appendChild(wrap);
     $("list").appendChild(row);
   });
 }
